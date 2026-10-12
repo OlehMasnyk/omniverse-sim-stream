@@ -1,0 +1,14 @@
+--extra-index-url https://pypi.nvidia.com
+
+# ovphysx 0.6.3 pins ovstage 0.2.0; ovrtx must bundle the same omniclient as that
+# ovstage (2.74), otherwise the renderer fails with "IOmniClient v2.75 requested".
+ovphysx==0.6.3
+ovstage==0.2.0.377349
+ovrtx==0.5.0.377615
+ovstream>=0.5.6
+
+warp-lang>=1.16,<2
+numpy
+fastapi
+uvicorn[standard]
+pillow

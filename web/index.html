@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Omniverse Sim Stream</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0; height: 100vh; display: grid; grid-template-columns: 300px 1fr;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0d1117; color: #e6edf3;
+        }
+        aside { padding: 16px; background: #161b22; border-right: 1px solid #30363d; overflow-y: auto; }
+        h1 { font-size: 18px; margin: 0 0 4px; color: #76b900; }
+        .sub { font-size: 12px; color: #8b949e; margin-bottom: 16px; }
+        h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .5px; color: #8b949e; margin: 18px 0 8px; }
+        label { display: flex; justify-content: space-between; align-items: center; font-size: 13px; margin: 6px 0; }
+        input { width: 90px; padding: 4px 6px; background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 4px; }
+        .buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 10px; }
+        button {
+            padding: 8px; border: 1px solid #30363d; border-radius: 6px; background: #21262d;
+            color: #e6edf3; font-weight: 600; cursor: pointer;
+        }
+        button:hover { background: #30363d; }
+        button.primary { grid-column: span 2; background: #76b900; color: #000; border-color: #76b900; }
+        button.primary:hover { background: #8fd400; }
+        pre { font-size: 12px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 8px; white-space: pre-wrap; }
+        .hint { font-size: 12px; color: #8b949e; line-height: 1.5; }
+        main { position: relative; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+        #remote-video { width: 100%; height: 100%; object-fit: contain; outline: none; background: #000; }
+        #overlay {
+            position: absolute; top: 12px; left: 12px; z-index: 3; padding: 4px 10px; border-radius: 12px;
+            font-size: 12px; font-weight: 600; background: #fb8500; color: #000;
+        }
+        #overlay.ok { background: #2ea043; color: #fff; }
+        #overlay.err { background: #cf222e; color: #fff; }
+    </style>
+</head>
+<body>
+<aside>
+    <h1>Omniverse Sim Stream</h1>
+    <div class="sub">ovphysx &rarr; ovstage &rarr; ovrtx &rarr; ovstream (WebRTC)</div>
+
+    <h2>New simulation</h2>
+    <label>Bodies <input id="bodies" type="number" value="24" min="0" max="500" /></label>
+    <label>Drop height (m) <input id="drop_height" type="number" value="6" step="0.5" min="0.5" max="50" /></label>
+    <label>Spread (m) <input id="spread" type="number" value="3" step="0.5" min="0.5" max="20" /></label>
+    <label>Sphere ratio <input id="sphere_ratio" type="number" value="0.3" step="0.1" min="0" max="1" /></label>
+    <label>Seed (blank = random) <input id="seed" type="number" placeholder="random" /></label>
+    <label>Add rover <input id="robot" type="checkbox" checked style="width:auto" /></label>
+    <div class="buttons">
+        <button class="primary" id="launch">Launch simulation</button>
+        <button id="start">Start</button>
+        <button id="pause">Pause</button>
+        <button id="reset">Reset</button>
+        <button id="camera">Reset camera</button>
+    </div>
+
+    <h2>Rover</h2>
+    <div class="buttons">
+        <button id="drive-fwd">Forward 2 s</button>
+        <button id="drive-spin">Spin 2 s</button>
+        <button id="robot-stop">Stop</button>
+        <button id="follow">Follow cam</button>
+    </div>
+    <label>Go to X <input id="goto-x" type="number" value="0" step="1" min="-19" max="19" /></label>
+    <label>Go to Z <input id="goto-z" type="number" value="0" step="1" min="-19" max="19" /></label>
+    <div class="buttons">
+        <button class="primary" id="goto">Drive to point</button>
+    </div>
+
+    <h2>Status <span class="hint">(GET /api/simulation)</span></h2>
+    <pre id="status">loading...</pre>
+
+    <h2>Last API call</h2>
+    <pre id="last-call">-</pre>
+
+    <p class="hint">
+        Viewport: click it, then drive with <b>WASD</b> / arrow keys, <b>Space</b> stops,
+        <b>F</b> toggles follow camera, <b>C</b> resets the camera.
+        Left-drag orbits, wheel zooms.
+        Every button just calls the REST API &mdash; try it from
+        <a href="/docs" target="_blank" style="color:#58a6ff">/docs</a> or curl too.
+    </p>
+</aside>
+
+<main>
+    <div id="overlay">Connecting...</div>
+    <!-- tabindex makes the video focusable: the client library only forwards
+         mouse/keyboard input while the video's container has focus. -->
+    <video id="remote-video" autoplay playsinline muted tabindex="-1"></video>
+    <audio id="remote-audio" autoplay muted></audio>
+</main>
+
+<script>
+    // The client library uses crypto.randomUUID(), which only exists in secure
+    // contexts (https or localhost). Polyfill it for plain-http LAN access.
+    if (window.crypto && !window.crypto.randomUUID) {
+        window.crypto.randomUUID = function () {
+            const b = crypto.getRandomValues(new Uint8Array(16));
+            b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+            const h = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+            return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+        };
+    }
+</script>
+<!-- @nvidia/ov-web-rtc UMD build, vendored from NVIDIA-Omniverse/ovstream examples/webrtc_client -->
+<script src="/static/ov-web-rtc.umd.cjs"></script>
+<script>
+    const $ = (id) => document.getElementById(id);
+    const overlay = $('overlay');
+    const video = $('remote-video');
+
+    function setOverlay(text, cls = '') {
+        overlay.textContent = text;
+        overlay.className = cls;
+    }
+
+    // ---------------------------------------------------------------- WebRTC video
+    const { AppStreamer, StreamType } = window.OVWebRTC;
+    const streamer = new AppStreamer();
+
+    async function connectStream() {
+        const cfg = await (await fetch('/api/config')).json();
+        setOverlay(`Connecting to ${location.hostname}:${cfg.signal_port}...`);
+        try {
+            await streamer.connect({
+                streamSource: StreamType.DIRECT,
+                logLevel: 2,
+                streamConfig: {
+                    videoElementId: 'remote-video',
+                    audioElementId: 'remote-audio',
+                    signalingServer: location.hostname,
+                    signalingPort: cfg.signal_port,
+                    fps: cfg.fps,
+                    maxReconnects: 5,
+                    reconnectDelay: 3000,
+                    onStart: (msg) => {
+                        if (msg.action !== 'start') return;
+                        if (msg.status === 'success') {
+                            setOverlay('Live', 'ok');
+                            video.play().catch(() => {});
+                            video.focus();
+                        } else if (msg.status === 'error') {
+                            setOverlay('Stream error: ' + (msg.info || 'unknown'), 'err');
+                        }
+                    },
+                    onStop: (msg) => setOverlay('Disconnected' + (msg.info ? ': ' + msg.info : ''), 'err'),
+                    onUpdate: () => {},
+                    onCustomEvent: (msg) => console.log('app message', msg),
+                },
+            });
+        } catch (err) {
+            setOverlay('Connect failed: ' + err.message, 'err');
+        }
+    }
+
+    video.addEventListener('mouseenter', () => video.focus());
+    window.addEventListener('beforeunload', () => streamer.terminate());
+
+    // ---------------------------------------------------------------- REST API
+    async function api(method, path, body) {
+        const res = await fetch(path, {
+            method,
+            headers: body ? { 'Content-Type': 'application/json' } : undefined,
+            body: body ? JSON.stringify(body) : undefined,
+        });
+        const data = await res.json();
+        $('last-call').textContent =
+            `${method} ${path}${body ? '\n' + JSON.stringify(body) : ''}\n-> ${res.status}` +
+            (res.ok ? '' : '\n' + JSON.stringify(data.detail));
+        return data;
+    }
+
+    $('launch').onclick = () => {
+        const num = (id) => parseFloat($(id).value);
+        const seed = $('seed').value.trim();
+        api('POST', '/api/simulation', {
+            bodies: parseInt($('bodies').value, 10),
+            drop_height: num('drop_height'),
+            spread: num('spread'),
+            sphere_ratio: num('sphere_ratio'),
+            seed: seed === '' ? null : parseInt(seed, 10),
+            autostart: true,
+            robot: $('robot').checked,
+        });
+    };
+    $('drive-fwd').onclick = () => api('POST', '/api/robot/drive', { linear: 2.0, angular: 0, duration: 2 });
+    $('drive-spin').onclick = () => api('POST', '/api/robot/drive', { linear: 0, angular: 1.5, duration: 2 });
+    $('robot-stop').onclick = () => api('POST', '/api/robot/stop');
+    $('goto').onclick = () => api('POST', '/api/robot/goto', {
+        x: parseFloat($('goto-x').value), z: parseFloat($('goto-z').value),
+    });
+    let following = false;
+    $('follow').onclick = async () => {
+        const s = await api('POST', '/api/camera/follow', { enabled: !following });
+        following = !!s.camera_follow;
+    };
+    $('start').onclick = () => api('POST', '/api/simulation/start');
+    $('pause').onclick = () => api('POST', '/api/simulation/pause');
+    $('reset').onclick = () => api('POST', '/api/simulation/reset');
+    $('camera').onclick = () => api('POST', '/api/camera/reset');
+
+    async function pollStatus() {
+        try {
+            const s = await (await fetch('/api/simulation')).json();
+            $('status').textContent = JSON.stringify(s, null, 2);
+            following = !!s.camera_follow;
+        } catch {
+            $('status').textContent = 'server unreachable';
+        }
+    }
+    setInterval(pollStatus, 500);
+    pollStatus();
+    connectStream();
+</script>
+</body>
+</html>

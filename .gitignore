@@ -1,0 +1,10 @@
+.venv/
+.cache/
+node_modules/
+dist/
+__pycache__/
+*.log
+logs/
+out/
+scenes/_generated/
+.idea/
